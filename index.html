@@ -244,6 +244,406 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+            // NOTE: The API key below may expire. If the app stops working, please obtain a new API key
+            // from https://gnews.io and replace it here.
+            const API_KEY = "98d21e94aae3e820d22cd395078be091";
+            const searchInput = document.getElementById('search-input');
+            const continentSelect = document.getElementById('continent-select');
+            const topicSelect = document.getElementById('topic-select');
+            const searchButton = document.getElementById('search-button');
+            const newsResultsContainer = document.getElementById('news-results-container');
+            const notificationBanner = document.getElementById('notification-banner');
+
+            // Theme toggle elements
+            const themeToggleButton = document.getElementById('theme-toggle-button');
+            const moonIcon = document.getElementById('moon-icon');
+            const sunIcon = document.getElementById('sun-icon');
+
+            // Settings modal elements
+            const settingsButton = document.getElementById('settings-button');
+            const settingsModal = document.getElementById('settings-modal');
+            const closeModalButton = document.querySelector('#settings-modal .close-button');
+            const enableNotificationsButton = document.getElementById('enable-notifications-button');
+
+            // Summary modal elements
+            const summaryModal = document.getElementById('summary-modal');
+            const summaryCloseButton = document.getElementById('summary-close-button');
+            const summaryContent = document.getElementById('summary-content');
+
+            // Map continents to specific countries for the API
+            const continentCountryMapping = {
+                'na': 'us', // North America
+                'sa': 'br', // South America (Brazil)
+                'eu': 'gb', // Europe (United Kingdom)
+                'as': 'in', // Asia (India)
+                'au': 'au', // Australia
+                'af': 'za'  // Africa (South Africa)
+            };
+
+            // List of companies to search for when the "Jobs" topic is selected
+            const jobsQueryCompanies = ['Etihad', 'Boeing', 'Airbus', 'Emirates', 'Qatar Airways', 'Lufthansa', 'Delta Air Lines', 'United Airlines'];
+
+            const searchUrlTemplate = `https://gnews.io/api/v4/search?q=QUERY&lang=en&country=COUNTRY&token=${API_KEY}`;
+            let lastSearchQuery = '';
+            let lastSelectedContinent = continentSelect.value;
+            let lastSelectedTopic = topicSelect.value;
+
+            // --- Theme Logic ---
+            const enableDarkMode = () => {
+                document.body.classList.add('dark');
+                sunIcon.style.display = 'block';
+                moonIcon.style.display = 'none';
+                localStorage.setItem('theme', 'dark');
+            };
+
+            const disableDarkMode = () => {
+                document.body.classList.remove('dark');
+                sunIcon.style.display = 'none';
+                moonIcon.style.display = 'block';
+                localStorage.setItem('theme', 'light');
+            };
+
+            const currentTheme = localStorage.getItem('theme');
+            if (currentTheme === 'dark') {
+                enableDarkMode();
+            } else {
+                disableDarkMode();
+            }
+
+            themeToggleButton.addEventListener('click', () => {
+                if (document.body.classList.contains('dark')) {
+                    disableDarkMode();
+                } else {
+                    enableDarkMode();
+                }
+            });
+
+            // --- Notification Logic ---
+            let notificationPermission = Notification.permission;
+
+            const updateNotificationButtonState = () => {
+                if (notificationPermission === 'granted') {
+                    enableNotificationsButton.disabled = true;
+                    enableNotificationsButton.textContent = "Notifications Enabled";
+                    enableNotificationsButton.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    enableNotificationsButton.classList.add('bg-gray-400', 'cursor-not-allowed');
+                } else {
+                    enableNotificationsButton.disabled = false;
+                    enableNotificationsButton.textContent = "Enable Notifications";
+                    enableNotificationsButton.classList.remove('bg-gray-400', 'cursor-not-allowed');
+                    enableNotificationsButton.classList.add('bg-green-600', 'hover:bg-green-700');
+                }
+            };
+
+            // Initial check for notification permission
+            updateNotificationButtonState();
+
+            const enableNotifications = async () => {
+                if ('Notification' in window) {
+                    const permission = await Notification.requestPermission();
+                    notificationPermission = permission;
+                    if (permission === 'granted') {
+                        showNotification("Notifications enabled!");
+                    } else {
+                        showNotification("Notification permission denied.");
+                    }
+                    updateNotificationButtonState();
+                } else {
+                    showNotification("Your browser does not support notifications.");
+                }
+            };
+
+            const sendNotification = async (title, body) => {
+                if (notificationPermission === 'granted' && 'serviceWorker' in navigator && navigator.serviceWorker.ready) {
+                    try {
+                        const registration = await navigator.serviceWorker.ready;
+                        registration.showNotification(title, { body: body });
+                    } catch (error) {
+                        console.error('Error showing notification:', error);
+                        showNotification('Failed to show notification. Check console for details.');
+                    }
+                } else {
+                    // Fallback or handle cases where service worker is not available
+                    console.warn('Cannot send notification. Service worker not ready or permission not granted.');
+                }
+            };
+            // -------------------------
+
+            // --- Modals Logic ---
+            settingsButton.addEventListener('click', () => {
+                settingsModal.style.display = 'flex';
+            });
+            closeModalButton.addEventListener('click', () => {
+                settingsModal.style.display = 'none';
+            });
+            summaryCloseButton.addEventListener('click', () => {
+                summaryModal.style.display = 'none';
+            });
+            window.addEventListener('click', (event) => {
+                if (event.target === settingsModal) {
+                    settingsModal.style.display = 'none';
+                }
+                if (event.target === summaryModal) {
+                    summaryModal.style.display = 'none';
+                }
+            });
+            // -------------------------
+
+            // A helper function to format the publication time
+            const formatTime = (time) => {
+                if (!time) return 'Date unknown';
+                try {
+                    const date = new Date(time);
+                    return date.toLocaleString();
+                } catch (e) {
+                    return 'Date invalid';
+                }
+            };
+
+            // A helper function to show a notification banner
+            const showNotification = (message) => {
+                notificationBanner.textContent = message;
+                notificationBanner.classList.remove('hidden');
+                notificationBanner.classList.add('animate-fade-in-down');
+                setTimeout(() => {
+                    notificationBanner.classList.add('hidden');
+                    notificationBanner.classList.remove('animate-fade-in-down');
+                }, 5000); // Hide after 5 seconds
+            };
+
+            // --- LLM Summary Logic ---
+            const summarizeArticle = async (title, description, button) => {
+                // Disable button and show loading state
+                button.disabled = true;
+                const originalIcon = button.innerHTML;
+                button.innerHTML = `
+                    <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                `;
+                button.classList.add('bg-gray-400', 'cursor-not-allowed');
+                button.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+
+                // Build the prompt for the Gemini API
+                const prompt = `Please provide a brief, easy-to-read summary of the following aviation news article. Focus on the main points and keep it concise.
+                
+                Title: ${title}
+                Description: ${description}
+                
+                Summary:`;
+                
+                let chatHistory = [];
+                chatHistory.push        .header-subtitle {
+            color: #4b5563;
+        }
+
+        /* Dark theme styles */
+        body.dark {
+            background-color: #111827;
+            color: #d1d5db;
+        }
+        body.dark .main-card {
+            background-color: #1f2937;
+            color: #e5e7eb;
+        }
+        body.dark .news-card {
+            background-color: #1f2937;
+            color: #e5e7eb;
+        }
+        body.dark .news-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
+        }
+        body.dark .header-title {
+            color: #60a5fa;
+        }
+        body.dark .header-subtitle {
+            color: #9ca3af;
+        }
+
+        /* Modal specific styles */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed;
+            z-index: 100;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .modal-content {
+            background-color: #fefefe;
+            padding: 24px;
+            border-radius: 1rem;
+            width: 90%;
+            max-width: 600px;
+            text-align: left;
+            position: relative;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.19), 0 6px 6px rgba(0,0,0,0.23);
+        }
+        body.dark .modal-content {
+            background-color: #1f2937;
+        }
+        .close-button {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 28px;
+            font-weight: bold;
+            color: #aaa;
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+        .close-button:hover {
+            color: #000;
+        }
+        body.dark .close-button {
+            color: #ddd;
+        }
+        body.dark .close-button:hover {
+            color: #fff;
+        }
+
+        @keyframes fade-in-down {
+            from {
+                opacity: 0;
+                transform: translateY(-20px) translateX(-50%);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) translateX(-50%);
+            }
+        }
+        .animate-fade-in-down {
+            animation: fade-in-down 0.5s ease-out forwards;
+        }
+        .error-message {
+            color: #ef4444;
+            background-color: #fef2f2;
+            padding: 1rem;
+            border-radius: 0.75rem;
+            margin-top: 1rem;
+            border: 1px solid #fca5a5;
+        }
+        .summarize-button {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800">
+
+    <!-- Notification Banner -->
+    <div id="notification-banner" class="fixed top-4 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-full shadow-lg transition-all duration-300 transform z-50 hidden">
+        New aviation news has been found!
+    </div>
+
+    <!-- Main Content Container -->
+    <div class="max-w-4xl mx-auto p-8 pt-12">
+        <!-- Header Section with Theme Toggle and Settings Button -->
+        <header class="text-center mb-12 relative">
+            <h1 class="text-5xl font-extrabold header-title mb-2">Aviation News Alert</h1>
+            <p class="text-lg header-subtitle">Get the latest updates from the aviation industry.</p>
+            <div class="absolute top-0 right-0 flex items-center space-x-2">
+                <button id="theme-toggle-button" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                    <!-- Sun SVG for light mode -->
+                    <svg id="sun-icon" class="w-6 h-6 text-yellow-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95a1 1 0 01-.707.293h-1.414a1 1 0 01-.707-.293l-1.414-1.414a1 1 0 010-1.414l1.414-1.414a1 1 0 011.414 0l1.414 1.414a1 1 0 010 1.414l-1.414 1.414zM16 10a1 1 0 011-1h1a1 1 0 110 2h-1a1 1 0 01-1-1zM2 10a1 1 0 011-1h1a1 1 0 110 2H3a1 1 0 01-1-1zM6.343 16.343a1 1 0 011.414 0l1.414 1.414a1 1 0 010 1.414l-1.414 1.414a1 1 0 01-1.414 0l-1.414-1.414a1 1 0 010-1.414l1.414-1.414zM14.95 6.464a1 1 0 010-1.414l1.414-1.414a1 1 0 011.414 0l1.414 1.414a1 1 0 010 1.414l-1.414 1.414a1 1 0 01-1.414 0l-1.414-1.414zM9 18a1 1 0 01-1 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM3.464 6.464a1 1 0 011.414 0l1.414 1.414a1 1 0 010 1.414L4.879 10.343a1 1 0 01-1.414 0L2.05 8.929a1 1 0 010-1.414L3.464 6.464z"></path>
+                    </svg>
+                    <!-- Moon SVG for dark mode -->
+                    <svg id="moon-icon" class="w-6 h-6 text-indigo-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M17.293 13.578A10.001 10.001 0 018.922 2.707a8.002 8.002 0 108.371 10.871z"></path>
+                    </svg>
+                </button>
+                <button id="settings-button" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                    <svg class="w-6 h-6 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M10 6a2 2 0 100-4 2 2 0 000 4zM10 14a2 2 100-4 2 2 0 000 4zM10 18a2 2 0 100-4 2 2 0 000 4z"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Search and Alert Section -->
+        <div class="main-card p-8 rounded-2xl shadow-xl mb-12">
+            <div class="flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
+                <input
+                    id="search-input"
+                    type="text"
+                    class="flex-grow w-full p-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700 dark:text-white"
+                    placeholder="Enter a keyword to search..."
+                    value=""
+                />
+                <select
+                    id="continent-select"
+                    class="w-full md:w-auto p-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700 dark:text-white"
+                >
+                    <option value="na">North America</option>
+                    <option value="sa">South America</option>
+                    <option value="eu">Europe</option>
+                    <option value="as">Asia</option>
+                    <option value="au">Australia</option>
+                    <option value="af">Africa</option>
+                </select>
+                <select
+                    id="topic-select"
+                    class="w-full md:w-auto p-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700 dark:text-white"
+                >
+                    <option value="all" selected>All News</option>
+                    <option value="business">Business</option>
+                    <option value="accident report">Accident Report</option>
+                    <option value="facts and stats">Facts & Stats</option>
+                    <option value="jobs">Jobs</option>
+                </select>
+                <button
+                    id="search-button"
+                    class="bg-blue-600 text-white px-6 py-4 rounded-xl font-bold hover:bg-blue-700 transition-colors duration-200 transform hover:scale-105 active:scale-95 shadow-md w-full md:w-auto"
+                >
+                    Search & Alert
+                </button>
+            </div>
+        </div>
+
+        <!-- News Results Section -->
+        <section id="news-results-container">
+            <!-- News items will be dynamically inserted here -->
+        </section>
+    </div>
+
+    <!-- Summary Modal -->
+    <div id="summary-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="summary-close-button">&times;</span>
+            <h2 class="text-2xl font-bold mb-4">Article Summary</h2>
+            <div id="summary-content" class="text-gray-700 dark:text-gray-300"></div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h2 class="text-2xl font-bold mb-4">Settings</h2>
+            <div class="flex flex-col items-center">
+                <p class="mb-4 text-center">Receive browser notifications for new alerts.</p>
+                <button
+                    id="enable-notifications-button"
+                    class="bg-green-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-green-700 transition-colors duration-200 transform hover:scale-105 active:scale-95 shadow-md w-full md:w-auto"
+                >
+                    Enable Notifications
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
             const API_KEY = "98d21e94aae3e820d22cd395078be091";
             const searchInput = document.getElementById('search-input');
             const continentSelect = document.getElementById('continent-select');
